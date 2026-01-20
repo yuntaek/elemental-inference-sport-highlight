@@ -184,10 +184,64 @@ def get_keywords(video_path: str):
     response = bedrock_runtime.invoke_model(modelId='us.anthropic.claude-3-5-haiku-20241022-v1:0', body=json.dumps({'anthropic_version': 'bedrock-2023-05-31', 'max_tokens': 256, 'messages': [{'role': 'user', 'content': f'핵심 키워드 10개 JSON 배열로만:\n{transcript}'}]}), contentType='application/json')
     return {'keywords': json.loads(response['body'].read())['content'][0]['text']}
 
+@tool
+def transcode_clip(video_path: str, start_sec: int, end_sec: int, output_filename: str = None):
+    '''비디오 클립을 트랜스코딩하여 로컬에 저장 (FFmpeg 사용)'''
+    import subprocess
+    
+    # 입력 파일 경로 확인
+    if not os.path.isfile(video_path):
+        return {'error': f'파일을 찾을 수 없음: {video_path}'}
+    
+    # 출력 파일명 생성
+    if output_filename is None:
+        base_name = os.path.splitext(os.path.basename(video_path))[0]
+        output_filename = f"{base_name}_clip_{start_sec}_{end_sec}.mp4"
+    
+    # 현재 작업 디렉토리에 저장
+    output_path = os.path.join(os.getcwd(), output_filename)
+    
+    # FFmpeg 명령어 구성
+    duration = end_sec - start_sec
+    cmd = [
+        'ffmpeg',
+        '-i', video_path,
+        '-ss', str(start_sec),
+        '-t', str(duration),
+        '-c:v', 'libx264',
+        '-c:a', 'aac',
+        '-y',  # 덮어쓰기
+        output_path
+    ]
+    
+    try:
+        # FFmpeg 실행
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            return {'error': f'FFmpeg 실패: {result.stderr}'}
+        
+        # 파일 크기 확인
+        file_size = os.path.getsize(output_path)
+        
+        return {
+            'status': 'success',
+            'output_file': output_path,
+            'file_size_mb': round(file_size / (1024 * 1024), 2),
+            'duration_sec': duration,
+            'start_sec': start_sec,
+            'end_sec': end_sec
+        }
+    except subprocess.TimeoutExpired:
+        return {'error': '트랜스코딩 타임아웃 (60초 초과)'}
+    except Exception as e:
+        return {'error': f'트랜스코딩 실패: {str(e)}'}
+
 # Agents
 video_analysis_agent = Agent(model=claude_model, tools=[create_video_embedding, summarize_video], system_prompt='영상 분석 전문. 임베딩 생성과 요약.')
 search_agent = Agent(model=claude_model, tools=[search_video_clips, get_clip_playback_url], system_prompt='영상 검색 전문. 클립 검색과 URL 생성. 검색 후 자동으로 URL 생성.')
 transcript_agent = Agent(model=claude_model, tools=[get_transcript, get_keywords], system_prompt='자막 처리 전문. 자막 조회, 키워드 추출.')
+transcoder_agent = Agent(model=claude_model, tools=[transcode_clip], system_prompt='비디오 트랜스코딩 전문. video_search 결과의 start_sec, end_sec를 사용하여 FFmpeg로 클립을 추출하고 로컬에 저장.')
 
 # MCP Server
 app = Server("video-processing")
@@ -195,9 +249,10 @@ app = Server("video-processing")
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
-        Tool(name="video_analysis", description="영상 분석 (임베딩, 요약)", inputSchema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
-        Tool(name="video_search", description="영상 검색 (클립 검색, URL)", inputSchema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
-        Tool(name="transcript", description="자막 처리 (자막, 키워드)", inputSchema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+        Tool(name="video_analysis", description="영상 분석 (임베딩, 요약)", inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "사용자의 요청을 그대로 전달. 번역하거나 수정하지 말 것."}}, "required": ["query"]}),
+        Tool(name="video_search", description="영상 검색 (클립 검색, URL)", inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "사용자의 요청을 그대로 전달. 번역하거나 수정하지 말 것."}}, "required": ["query"]}),
+        Tool(name="transcript", description="자막 처리 (자막, 키워드)", inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "사용자의 요청을 그대로 전달. 번역하거나 수정하지 말 것."}}, "required": ["query"]}),
+        Tool(name="transcoder", description="비디오 트랜스코딩 (FFmpeg 클립 추출 및 저장)", inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "사용자의 요청을 그대로 전달. 번역하거나 수정하지 말 것."}}, "required": ["query"]})
     ]
 
 @app.call_tool()
@@ -209,6 +264,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         response = search_agent(query)
     elif name == "transcript":
         response = transcript_agent(query)
+    elif name == "transcoder":
+        response = transcoder_agent(query)
     else:
         raise ValueError(f"Unknown tool: {name}")
     return [TextContent(type="text", text=str(response))]
