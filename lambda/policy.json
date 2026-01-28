@@ -1,0 +1,20 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["medialive:ListChannels", "medialive:DescribeChannel"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["mediapackage:ListOriginEndpoints"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["logs:FilterLogEvents", "logs:DescribeLogGroups"],
+      "Resource": "*"
+    }
+  ]
+}

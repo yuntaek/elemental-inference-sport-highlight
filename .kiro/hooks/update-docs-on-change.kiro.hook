@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "name": "Update Docs on Source Change",
+  "description": "Automatically updates README.md documentation when TypeScript, React, or configuration files are modified",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.ts",
+      "*.tsx",
+      "*.jsx",
+      "*.js",
+      "package.json",
+      "vite.config.ts",
+      "tsconfig.json"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Review the changes made to the source files and update the README.md to reflect any new features, components, configuration changes, or usage instructions that should be documented. Keep the documentation clear, concise, and up-to-date with the current codebase."
+  }
+}

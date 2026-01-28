@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "name": "Code Quality Analyzer",
+  "description": "Automatically analyzes modified source code for potential improvements including code smells, design patterns, best practices, readability, maintainability, and performance optimizations",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.ts",
+      "*.tsx",
+      "*.js",
+      "*.jsx",
+      "*.py",
+      "*.java",
+      "*.go",
+      "*.rs",
+      "*.cpp",
+      "*.c",
+      "*.h",
+      "*.cs",
+      "*.rb",
+      "*.php",
+      "*.swift",
+      "*.kt"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Analyze the modified code in the edited file for potential improvements. Focus on:\n1. Code smells and anti-patterns\n2. Opportunities to apply design patterns\n3. Best practices for the language\n4. Readability improvements (naming, structure, comments)\n5. Maintainability concerns (complexity, coupling, cohesion)\n6. Performance optimizations\n\nProvide specific, actionable suggestions while maintaining existing functionality. Keep suggestions concise and prioritized by impact."
+  },
+  "workspaceFolderName": "Highlightmanager",
+  "shortName": "code-quality-analyzer"
+}
