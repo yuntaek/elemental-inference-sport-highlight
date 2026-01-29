@@ -15,10 +15,12 @@ AWS MediaLive 채널과 연동하여 스포츠 이벤트(3점슛, 덩크, 사건
 
 라이브 방송 중 하이라이트 이벤트에서 비디오 클립을 생성하는 기능입니다:
 
-- **클립 생성**: 이벤트의 PTS 정보를 기반으로 Time-shift URL 생성 후 MediaConvert로 MP4 변환
-- **상태 추적**: PENDING → PROCESSING → COMPLETED/FAILED 상태 폴링
+- **클립 생성**: 이벤트의 PTS 정보를 기반으로 Time-shift URL 생성 후 FFmpeg로 MP4 변환
+- **Lambda@Edge VOD 변환**: CloudFront Origin Request에서 MediaPackage Time-shift HLS를 VOD 형식으로 변환
+- **FFmpeg Lambda Layer**: MediaConvert 대신 FFmpeg를 사용하여 HLS → MP4 직접 변환 (query string 지원)
+- **상태 추적**: 동기 처리로 즉시 COMPLETED/FAILED 상태 반환
 - **클립 미리보기/다운로드**: 생성 완료된 클립의 재생 및 S3 presigned URL 다운로드
-- **일괄 생성**: 여러 이벤트 선택 후 일괄 클립 생성 지원
+- **EventBridge 연동**: 스포츠 이벤트 감지 시 자동 클립 생성 (40-60초 딜레이 후 처리)
 
 ## 기술 스택
 
@@ -32,11 +34,51 @@ AWS MediaLive 채널과 연동하여 스포츠 이벤트(3점슛, 덩크, 사건
 
 - **MediaLive**: 채널 상태 조회 (us-west-2)
 - **MediaPackage**: Time-shift 기능으로 과거 시점 영상 접근 (24시간 윈도우)
-- **MediaConvert**: HLS → MP4 클립 변환
+- **Lambda + FFmpeg Layer**: HLS → MP4 클립 변환 (MediaConvert 대체)
+- **Lambda@Edge**: CloudFront Origin Request에서 Time-shift HLS를 VOD 형식으로 변환
 - **DynamoDB**: 클립 메타데이터 및 상태 저장
 - **S3**: 생성된 클립 파일 저장
-- **API Gateway**: REST API (`https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com`)
+- **CloudFront**: HLS 스트리밍 및 클립 배포
+- **EventBridge**: 스포츠 이벤트 수신 및 Lambda 트리거
+- **API Gateway**: REST API (환경별 분리)
 - **Amplify**: 프론트엔드 호스팅
+
+### API 환경
+
+| 환경 | API Gateway URL | Lambda | DynamoDB |
+|------|-----------------|--------|----------|
+| **Production** | `https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com` | `highlight-manager-api` | `highlight-clips` |
+| **Staging** | `https://s08iiuslb1.execute-api.us-west-2.amazonaws.com` | `highlight-manager-api-stage` | `highlight-clips-stage` |
+
+### CloudFront 배포
+
+| 용도 | CloudFront Domain | Origin |
+|------|-------------------|--------|
+| **HLS Streaming** | `d2byorho3b7g5y.cloudfront.net` | MediaPackage |
+| **Clip Storage** | `df1kr6icfg8e8.cloudfront.net` | S3 |
+
+### EventBridge 파이프라인
+
+```
+aws.elemental-inference (Clip Metadata Generated)
+    ├── CloudWatch Logs (/aws/events/medialivecrop)
+    ├── highlight-clip-generator (Production → highlight-clips)
+    ├── highlight-clip-generator-stage (Staging → highlight-clips-stage)
+    └── clip-transcoder (MediaConvert)
+```
+
+### API 엔드포인트
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/channels` | 채널 목록 조회 |
+| GET | `/channels/{channelId}` | 채널 상세 조회 |
+| GET | `/channels/{channelId}/events` | 채널별 이벤트 목록 |
+| GET | `/channels/{channelId}/clips` | 채널별 클립 목록 |
+| POST | `/clips` | 클립 생성 요청 |
+| GET | `/clips` | 전체 클립 목록 |
+| GET | `/clips/{clipId}` | 클립 상태 조회 |
+| GET | `/clips/{clipId}/download` | 다운로드 URL 생성 |
 
 ## 실행 방법
 
@@ -44,12 +86,60 @@ AWS MediaLive 채널과 연동하여 스포츠 이벤트(3점슛, 덩크, 사건
 # 의존성 설치
 npm install
 
-# 개발 서버 실행
+# 개발 서버 실행 (기본: Production API)
 npm run dev
+
+# Staging API로 개발 서버 실행
+npm run dev -- --mode staging
+
+# 커스텀 API URL로 개발 서버 실행
+VITE_API_BASE=https://your-api.example.com npm run dev
 
 # 프로덕션 빌드
 npm run build
+
+# Staging 환경 빌드
+npm run build -- --mode staging
 ```
+
+### 환경 변수 설정
+
+API Base URL은 `VITE_API_BASE` 환경 변수로 설정할 수 있습니다:
+
+| 환경 변수 | 설명 | 기본값 |
+|----------|------|--------|
+| `VITE_API_BASE` | API Gateway Base URL | `https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com` (Production) |
+
+환경별 설정 파일:
+- `.env.production` - Production 환경 변수
+- `.env.staging` - Staging 환경 변수
+- `.env.local` - 로컬 개발용 (Git에서 제외됨)
+
+```bash
+# .env.staging 예시
+VITE_API_BASE=https://s08iiuslb1.execute-api.us-west-2.amazonaws.com
+```
+
+### Amplify 환경별 배포
+
+Amplify 콘솔에서 브랜치별 환경 변수를 설정하거나, `amplify.yml`에서 환경별 빌드 명령어를 지정할 수 있습니다:
+
+```yaml
+# amplify.yml 예시
+version: 1
+frontend:
+  phases:
+    build:
+      commands:
+        - npm ci
+        - npm run build -- --mode ${AWS_BRANCH}  # main → production, staging → staging
+  artifacts:
+    baseDirectory: dist
+    files:
+      - '**/*'
+```
+
+또는 Amplify 콘솔 > 앱 설정 > 환경 변수에서 `VITE_API_BASE`를 브랜치별로 설정하세요.
 
 ## 프로젝트 구조
 
@@ -120,9 +210,15 @@ git push origin main
 cd lambda
 zip -r function.zip index.mjs
 
-# 2. Lambda 함수 업데이트
+# 2. Production Lambda 함수 업데이트
 aws lambda update-function-code \
-  --function-name highlight-api \
+  --function-name highlight-manager-api \
+  --zip-file fileb://function.zip \
+  --region us-west-2
+
+# 3. Staging Lambda 함수 업데이트
+aws lambda update-function-code \
+  --function-name highlight-manager-api-stage \
   --zip-file fileb://function.zip \
   --region us-west-2
 ```
@@ -258,13 +354,23 @@ aws iam attach-role-policy \
 
 Lambda 함수에서 사용하는 주요 설정값:
 
-| 변수 | 값 | 설명 |
-|------|-----|------|
-| `REGION` | `us-west-2` | AWS 리전 |
-| `BUCKET` | `hackathon8-output-video` | 클립 저장 S3 버킷 |
-| `TABLE` | `highlight-clips-stage` | DynamoDB 테이블명 (staging 환경) |
-| `MEDIACONVERT_ROLE` | `arn:aws:iam::083304596944:role/MediaConvertRole` | MediaConvert IAM 역할 |
-| `TIME_SHIFT_WINDOW_HOURS` | `24` | Time-shift 윈도우 (시간) |
+| 변수 | Production | Staging | 설명 |
+|------|------------|---------|------|
+| `DYNAMODB_TABLE` | `highlight-clips` | `highlight-clips-stage` | DynamoDB 테이블명 |
+| `REGION` | `us-west-2` | `us-west-2` | AWS 리전 |
+| `S3_BUCKET` | `hackathon8-output-video` | `hackathon8-output-video` | 클립 저장 S3 버킷 |
+| `MEDIACONVERT_ROLE` | `arn:aws:iam::083304596944:role/MediaConvertRole` | - | MediaConvert IAM 역할 |
+| `TIME_SHIFT_WINDOW_HOURS` | `24` | `24` | Time-shift 윈도우 (시간) |
+
+#### Lambda 환경 변수 설정
+
+```bash
+# Staging API Lambda 환경 변수 설정
+aws lambda update-function-configuration \
+  --function-name highlight-manager-api-stage \
+  --environment "Variables={DYNAMODB_TABLE=highlight-clips-stage}" \
+  --region us-west-2
+```
 
 ### 5. API Gateway 설정
 
@@ -272,9 +378,13 @@ API Gateway는 다음 엔드포인트를 제공합니다:
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `POST` | `/clips` | 클립 생성 요청 |
-| `GET` | `/clips/{clipId}` | 클립 상태 조회 |
+| `GET` | `/channels` | 채널 목록 조회 |
+| `GET` | `/channels/{channelId}` | 채널 상세 조회 |
+| `GET` | `/channels/{channelId}/events` | 채널별 이벤트 목록 |
 | `GET` | `/channels/{channelId}/clips` | 채널별 클립 목록 |
+| `POST` | `/clips` | 클립 생성 요청 |
+| `GET` | `/clips` | 전체 클립 목록 |
+| `GET` | `/clips/{clipId}` | 클립 상태 조회 |
 | `GET` | `/clips/{clipId}/download` | 다운로드 URL 생성 |
 
 ### 6. EventBridge 규칙 (MediaConvert 이벤트)
@@ -300,6 +410,35 @@ aws events put-targets \
     "Arn": "arn:aws:lambda:us-west-2:083304596944:function:clip-generator"
   }]' \
   --region us-west-2
+```
+
+### 7. EventBridge 규칙 (스포츠 이벤트)
+
+Elemental Inference에서 발생하는 스포츠 이벤트를 Lambda로 전달:
+
+```bash
+# 현재 설정된 타겟 확인
+aws events list-targets-by-rule --rule rule --region us-west-2
+
+# Staging Lambda 타겟 추가
+aws events put-targets \
+  --rule rule \
+  --targets "Id=clip-generator-lambda-stage,Arn=arn:aws:lambda:us-west-2:083304596944:function:highlight-clip-generator-stage" \
+  --region us-west-2
+```
+
+### 8. CloudFront 배포
+
+MediaPackage HLS 스트리밍을 위한 CloudFront 배포:
+
+```bash
+# CloudFront 배포 생성 (이미 생성됨)
+# Distribution ID: E3LW2EVVNW4S9P
+# Domain: d2byorho3b7g5y.cloudfront.net
+
+# HLS URL 예시
+# 기존: https://c4af3793bf76b33c.mediapackage.us-west-2.amazonaws.com/out/v1/038b4469b5c541dc8816deef6ccd4aae/index.m3u8
+# CloudFront: https://d2byorho3b7g5y.cloudfront.net/out/v1/038b4469b5c541dc8816deef6ccd4aae/index.m3u8
 ```
 
 ### 테스트

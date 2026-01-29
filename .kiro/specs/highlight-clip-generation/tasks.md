@@ -125,7 +125,7 @@
     - **Property 2: 클립 ID 고유성**
     - **Validates: Requirements 1.4**
 
-- [-] 10. Final Checkpoint - 전체 기능 검증
+- [x] 10. Final Checkpoint - 전체 기능 검증
   - 모든 테스트 통과 확인, 문제 발생 시 사용자에게 문의
 
 ## Notes

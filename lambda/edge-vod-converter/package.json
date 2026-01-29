@@ -1,0 +1,19 @@
+{
+  "name": "edge-vod-converter",
+  "version": "1.0.0",
+  "description": "CloudFront Lambda@Edge - Convert MediaPackage Time-shift HLS to VOD format",
+  "main": "index.js",
+  "scripts": {
+    "package": "zip -r function.zip index.js"
+  },
+  "keywords": [
+    "lambda",
+    "edge",
+    "cloudfront",
+    "hls",
+    "vod",
+    "mediapackage"
+  ],
+  "author": "",
+  "license": "ISC"
+}

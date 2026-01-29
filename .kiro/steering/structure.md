@@ -87,16 +87,37 @@ server/
 
 ```
 lambda/
-├── index.mjs               # Main Lambda function code
+├── index.mjs               # Main API Lambda (channels, events, clips CRUD)
 ├── function.zip            # Deployment package
 ├── api-function.zip        # API Lambda deployment package
 ├── policy.json             # IAM policy
 ├── trust-policy.json       # IAM trust policy
-└── clip-generator/         # Highlight clip generation Lambda
-    ├── index.mjs           # Clip generator using MediaConvert
-    ├── function.zip        # Deployment package
-    └── package.json        # Dependencies (@aws-sdk/client-mediaconvert, etc.)
+├── clip-generator/         # Highlight clip generation Lambda
+│   ├── index.mjs           # EventBridge handler → FFmpeg → S3/DynamoDB
+│   ├── function.zip        # Deployment package
+│   └── package.json        # Dependencies (@aws-sdk/*)
+├── edge-vod-converter/     # Lambda@Edge for VOD conversion
+│   ├── index.js            # Origin Request handler (HLS VOD 변환)
+│   ├── function.zip        # Deployment package
+│   ├── README.md           # 배포 가이드
+│   └── trust-policy.json   # Edge Lambda trust policy
+└── ffmpeg-layer/           # FFmpeg Lambda Layer
+    └── bin/ffmpeg          # FFmpeg 바이너리
 ```
+
+### API Endpoints (lambda/index.mjs)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/channels` | 채널 목록 조회 |
+| GET | `/channels/{channelId}` | 채널 상세 조회 |
+| GET | `/channels/{channelId}/events` | 채널별 이벤트 목록 |
+| GET | `/channels/{channelId}/clips` | 채널별 클립 목록 |
+| GET | `/channels/{channelId}/thumbnail` | 채널 썸네일 |
+| POST | `/clips` | 클립 생성 요청 |
+| GET | `/clips` | 전체 클립 목록 |
+| GET | `/clips/{clipId}` | 클립 상태 조회 |
+| GET | `/clips/{clipId}/download` | 다운로드 URL 생성 |
 
 ## Naming Conventions
 

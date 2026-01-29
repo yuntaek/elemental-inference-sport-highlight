@@ -1,20 +1,24 @@
-import { MediaConvertClient, CreateJobCommand, GetJobCommand } from '@aws-sdk/client-mediaconvert';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import { gunzipSync } from 'zlib';
+import { execSync } from 'child_process';
+import { readFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 
 const REGION = 'us-west-2';
 const BUCKET = 'hackathon8-output-video';
 const TABLE = 'highlight-clips-stage';
-const HLS_URL = 'https://c4af3793bf76b33c.mediapackage.us-west-2.amazonaws.com/out/v1/038b4469b5c541dc8816deef6ccd4aae/index.m3u8';
+const HLS_URL = 'https://d2byorho3b7g5y.cloudfront.net/out/v1/038b4469b5c541dc8816deef6ccd4aae/index.m3u8';
 const DEFAULT_CHANNEL_ID = '6220813';
-const MEDIACONVERT_ROLE = 'arn:aws:iam::083304596944:role/MediaConvertRole';
 const TIME_SHIFT_WINDOW_HOURS = 24;
+const EVENT_DELAY_MS = parseInt(process.env.EVENT_DELAY_MS || '60000', 10); // 기본 60초
 
-const mc = new MediaConvertClient({ region: REGION });
+// FFmpeg 경로 (Lambda Layer)
+const FFMPEG_PATH = '/opt/bin/ffmpeg';
+const TMP_DIR = '/tmp';
+
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 const s3 = new S3Client({ region: REGION });
 
@@ -24,11 +28,6 @@ export const handler = async (event) => {
   // API Gateway 요청 처리
   if (event.httpMethod) {
     return handleApiRequest(event);
-  }
-  
-  // MediaConvert Job 상태 변경 이벤트 처리 (EventBridge)
-  if (event.source === 'aws.mediaconvert' && event['detail-type'] === 'MediaConvert Job State Change') {
-    return handleMediaConvertEvent(event);
   }
   
   // 기존 CloudWatch Logs / EventBridge 이벤트 처리
@@ -107,59 +106,37 @@ async function createClip(body) {
   const duration = endSeconds - startSeconds;
   
   // Time-shift URL 생성 (Requirements 2.1, 2.2)
-  const { startTime, endTime, timeShiftUrl } = generateTimeShiftUrl(timestamp, duration);
-  
+  const { timeShiftUrl } = generateTimeShiftUrl(timestamp, duration);
   const outputKey = `clips/${channelId}/${clipId}`;
   
   try {
-    // MediaConvert Job 생성 (Requirements 3.1)
-    const jobResult = await mc.send(new CreateJobCommand({
-      Role: MEDIACONVERT_ROLE,
-      Settings: {
-        Inputs: [{
-          FileInput: timeShiftUrl,
-          InputClippings: [{
-            StartTimecode: '00:00:00:00',
-            EndTimecode: secsToTimecode(duration)
-          }]
-        }],
-        OutputGroups: [{
-          Name: 'File Group',
-          OutputGroupSettings: {
-            Type: 'FILE_GROUP_SETTINGS',
-            FileGroupSettings: { Destination: `s3://${BUCKET}/${outputKey}` }
-          },
-          Outputs: [{
-            ContainerSettings: { Container: 'MP4' },
-            VideoDescription: {
-              CodecSettings: {
-                Codec: 'H_264',
-                H264Settings: { 
-                  RateControlMode: 'QVBR', 
-                  QvbrSettings: { QvbrQualityLevel: 7 },
-                  MaxBitrate: 5000000
-                }
-              }
-            },
-            AudioDescriptions: [{
-              CodecSettings: { 
-                Codec: 'AAC', 
-                AacSettings: { 
-                  Bitrate: 96000, 
-                  SampleRate: 48000,
-                  CodingMode: 'CODING_MODE_2_0'
-                } 
-              }
-            }]
-          }]
-        }]
-      },
-      UserMetadata: {
-        clipId: clipId
-      }
+    // FFmpeg로 클립 생성
+    const outputPath = await createClipWithFFmpeg(timeShiftUrl, clipId, duration);
+    
+    // S3에 업로드
+    const clipBuffer = readFileSync(outputPath);
+    await s3.send(new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: `${outputKey}.mp4`,
+      Body: clipBuffer,
+      ContentType: 'video/mp4'
     }));
     
-    const jobId = jobResult.Job?.Id;
+    // 임시 파일 삭제
+    if (existsSync(outputPath)) unlinkSync(outputPath);
+    
+    // 썸네일 생성
+    const thumbnailPath = await createThumbnailWithFFmpeg(timeShiftUrl, clipId);
+    if (thumbnailPath && existsSync(thumbnailPath)) {
+      const thumbBuffer = readFileSync(thumbnailPath);
+      await s3.send(new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: `${outputKey}.jpg`,
+        Body: thumbBuffer,
+        ContentType: 'image/jpeg'
+      }));
+      unlinkSync(thumbnailPath);
+    }
     
     // DynamoDB에 메타데이터 저장 (Requirements 3.2)
     await ddb.send(new PutCommand({
@@ -176,20 +153,19 @@ async function createClip(body) {
         duration,
         timestamp: eventTime,
         clipUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.mp4`,
-        thumbnailUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.0000000.jpg`,
-        status: 'PROCESSING',
-        jobId,
+        thumbnailUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.jpg`,
+        status: 'COMPLETED',
         createdAt: now,
         updatedAt: now
       }
     }));
     
-    console.log('Clip created:', clipId, 'Job:', jobId);
+    console.log('Clip created:', clipId);
     
     return response(201, {
       clipId,
-      status: 'PROCESSING',
-      message: 'Clip generation started'
+      status: 'COMPLETED',
+      message: 'Clip generation completed'
     });
   } catch (err) {
     console.error('Failed to create clip:', err);
@@ -326,61 +302,100 @@ function generateTimeShiftUrl(timestamp, duration) {
   return { startTime, endTime, timeShiftUrl };
 }
 
-// MediaConvert Job 상태 변경 이벤트 처리 (Requirements 3.3, 3.4)
-async function handleMediaConvertEvent(event) {
-  const { detail } = event;
-  const jobId = detail.jobId;
-  const status = detail.status;
+// FFmpeg로 HLS를 MP4 클립으로 변환 (재시도 로직 포함)
+async function createClipWithFFmpeg(hlsUrl, clipId, duration, retryCount = 0) {
+  const outputPath = `${TMP_DIR}/${clipId}.mp4`;
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000;
   
-  console.log('MediaConvert event:', jobId, status);
-  
-  // clipId를 UserMetadata에서 가져오거나 jobId로 조회
-  const clipId = detail.userMetadata?.clipId;
-  
-  if (!clipId) {
-    console.log('No clipId in metadata, skipping');
-    return { statusCode: 200 };
+  // /tmp 디렉토리 확인
+  if (!existsSync(TMP_DIR)) {
+    mkdirSync(TMP_DIR, { recursive: true });
   }
   
-  const now = Date.now();
+  console.log(`Creating clip with FFmpeg (attempt ${retryCount + 1}):`, hlsUrl);
   
-  if (status === 'COMPLETE') {
-    // 성공: COMPLETED로 업데이트 (Requirements 3.3)
-    await ddb.send(new UpdateCommand({
-      TableName: TABLE,
-      Key: { id: clipId },
-      UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
-      ExpressionAttributeNames: {
-        '#status': 'status'
-      },
-      ExpressionAttributeValues: {
-        ':status': 'COMPLETED',
-        ':updatedAt': now
-      }
-    }));
-    console.log('Clip completed:', clipId);
-  } else if (status === 'ERROR') {
-    // 실패: FAILED로 업데이트 (Requirements 3.4)
-    const errorMessage = detail.errorMessage || 'MediaConvert job failed';
+  // FFmpeg 명령어 실행 - URL을 single quote로 감싸서 특수문자 보호
+  const cmd = `${FFMPEG_PATH} -i '${hlsUrl}' -t ${duration} -c copy -movflags +faststart -y "${outputPath}"`;
+  
+  try {
+    execSync(cmd, { 
+      timeout: 120000,
+      stdio: 'pipe'
+    });
+    console.log('FFmpeg completed:', outputPath);
+    return outputPath;
+  } catch (err) {
+    const errorMsg = err.stderr?.toString() || err.message;
     
-    await ddb.send(new UpdateCommand({
-      TableName: TABLE,
-      Key: { id: clipId },
-      UpdateExpression: 'SET #status = :status, #error = :error, updatedAt = :updatedAt',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-        '#error': 'error'
-      },
-      ExpressionAttributeValues: {
-        ':status': 'FAILED',
-        ':error': errorMessage,
-        ':updatedAt': now
+    // 404 에러 감지 시 재시도
+    if (errorMsg.includes('404') && retryCount < MAX_RETRIES) {
+      console.log(`404 error, retrying in ${RETRY_DELAY_MS}ms... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+      await sleep(RETRY_DELAY_MS);
+      return createClipWithFFmpeg(hlsUrl, clipId, duration, retryCount + 1);
+    }
+    
+    console.error('FFmpeg error:', errorMsg);
+    // 재인코딩으로 재시도
+    const fallbackCmd = `${FFMPEG_PATH} -i '${hlsUrl}' -t ${duration} -c:v libx264 -c:a aac -movflags +faststart -y "${outputPath}"`;
+    try {
+      execSync(fallbackCmd, { 
+        timeout: 180000,
+        stdio: 'pipe'
+      });
+      return outputPath;
+    } catch (fallbackErr) {
+      const fallbackErrorMsg = fallbackErr.stderr?.toString() || fallbackErr.message;
+      
+      // 재인코딩에서도 404 에러 시 재시도
+      if (fallbackErrorMsg.includes('404') && retryCount < MAX_RETRIES) {
+        console.log(`404 error on fallback, retrying in ${RETRY_DELAY_MS}ms...`);
+        await sleep(RETRY_DELAY_MS);
+        return createClipWithFFmpeg(hlsUrl, clipId, duration, retryCount + 1);
       }
-    }));
-    console.log('Clip failed:', clipId, errorMessage);
+      throw fallbackErr;
+    }
   }
+}
+
+// sleep 헬퍼 함수
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// FFmpeg로 썸네일 생성
+function createThumbnailWithFFmpeg(hlsUrl, clipId) {
+  const outputPath = `${TMP_DIR}/${clipId}.jpg`;
   
-  return { statusCode: 200 };
+  console.log('Creating thumbnail with FFmpeg');
+  
+  // 첫 프레임에서 썸네일 추출 - URL을 single quote로 감싸서 특수문자 보호
+  const cmd = `${FFMPEG_PATH} -i '${hlsUrl}' -vframes 1 -q:v 2 -y "${outputPath}"`;
+  
+  try {
+    execSync(cmd, { 
+      timeout: 30000,
+      stdio: 'pipe'
+    });
+    console.log('Thumbnail created:', outputPath);
+    return outputPath;
+  } catch (err) {
+    console.error('Thumbnail error:', err.message);
+    return null;
+  }
+}
+
+function response(statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+    },
+    body: JSON.stringify(body)
+  };
 }
 
 // 기존 CloudWatch Logs / EventBridge 이벤트 처리 (레거시 지원)
@@ -396,6 +411,9 @@ async function handleLegacyEvent(event) {
   // EventBridge 직접 형식
   else if (event.detail) {
     events = [event];
+    // EventBridge 이벤트는 딜레이 후 처리 (Time-shift 데이터 준비 대기)
+    console.log(`EventBridge event detected, waiting ${EVENT_DELAY_MS}ms for Time-shift data...`);
+    await sleep(EVENT_DELAY_MS);
   }
 
   for (const evt of events) {
@@ -403,117 +421,94 @@ async function handleLegacyEvent(event) {
       const detail = evt.detail || {};
       const { startPts, endPts, timescale = 90000, tags = [] } = detail;
       
-      if (!startPts || !endPts) {
-        console.log('Missing startPts or endPts');
+      // startPts가 0일 수 있으므로 undefined/null 체크
+      if (startPts === undefined || startPts === null || !endPts) {
+        console.log('Missing startPts or endPts', { startPts, endPts });
         continue;
       }
 
-      const startSec = Math.floor(startPts / timescale);
       const duration = Math.ceil((endPts - startPts) / timescale);
       const clipId = randomUUID();
       const outputKey = `clips/${DEFAULT_CHANNEL_ID}/${clipId}`;
 
-      // 현재 시간 기준 상대 오프셋 계산 (라이브 스트림용)
       const eventTime = new Date(evt.time || Date.now()).getTime();
       const now = Date.now();
       
       // Time-shift URL 생성
       const { timeShiftUrl } = generateTimeShiftUrl(eventTime, duration);
 
-      // MediaConvert Job 생성
-      await mc.send(new CreateJobCommand({
-        Role: MEDIACONVERT_ROLE,
-        Settings: {
-          Inputs: [{
-            FileInput: timeShiftUrl,
-            InputClippings: [{
-              StartTimecode: '00:00:00:00',
-              EndTimecode: secsToTimecode(duration)
-            }]
-          }],
-          OutputGroups: [{
-            Name: 'File Group',
-            OutputGroupSettings: {
-              Type: 'FILE_GROUP_SETTINGS',
-              FileGroupSettings: { Destination: `s3://${BUCKET}/${outputKey}` }
-            },
-            Outputs: [{
-              ContainerSettings: { Container: 'MP4' },
-              VideoDescription: {
-                CodecSettings: {
-                  Codec: 'H_264',
-                  H264Settings: { 
-                    RateControlMode: 'QVBR', 
-                    QvbrSettings: { QvbrQualityLevel: 7 },
-                    MaxBitrate: 5000000
-                  }
-                }
-              },
-              AudioDescriptions: [{
-                CodecSettings: { 
-                  Codec: 'AAC', 
-                  AacSettings: { 
-                    Bitrate: 96000, 
-                    SampleRate: 48000,
-                    CodingMode: 'CODING_MODE_2_0'
-                  } 
-                }
-              }]
-            }]
-          }]
-        },
-        UserMetadata: {
-          clipId: clipId
+      try {
+        // FFmpeg로 클립 생성 (재시도 로직 포함)
+        const outputPath = await createClipWithFFmpeg(timeShiftUrl, clipId, duration);
+        
+        // S3에 업로드
+        const clipBuffer = readFileSync(outputPath);
+        await s3.send(new PutObjectCommand({
+          Bucket: BUCKET,
+          Key: `${outputKey}.mp4`,
+          Body: clipBuffer,
+          ContentType: 'video/mp4'
+        }));
+        if (existsSync(outputPath)) unlinkSync(outputPath);
+        
+        // 썸네일 생성
+        const thumbnailPath = createThumbnailWithFFmpeg(timeShiftUrl, clipId);
+        if (thumbnailPath && existsSync(thumbnailPath)) {
+          const thumbBuffer = readFileSync(thumbnailPath);
+          await s3.send(new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: `${outputKey}.jpg`,
+            Body: thumbBuffer,
+            ContentType: 'image/jpeg'
+          }));
+          unlinkSync(thumbnailPath);
         }
-      }));
 
-      // DynamoDB에 저장
-      await ddb.send(new PutCommand({
-        TableName: TABLE,
-        Item: {
-          id: clipId,
-          channelId: DEFAULT_CHANNEL_ID,
-          type: tags[0] || 'default',
-          tags,
-          startPts, endPts, timescale,
-          duration,
-          clipUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.mp4`,
-          thumbnailUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.0000000.jpg`,
-          timestamp: eventTime,
-          status: 'PROCESSING',
-          createdAt: now,
-          updatedAt: now
-        }
-      }));
+        // DynamoDB에 저장
+        await ddb.send(new PutCommand({
+          TableName: TABLE,
+          Item: {
+            id: clipId,
+            channelId: DEFAULT_CHANNEL_ID,
+            type: tags[0] || 'default',
+            tags,
+            startPts, endPts, timescale,
+            duration,
+            clipUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.mp4`,
+            thumbnailUrl: `https://${BUCKET}.s3.${REGION}.amazonaws.com/${outputKey}.jpg`,
+            timestamp: eventTime,
+            status: 'COMPLETED',
+            createdAt: now,
+            updatedAt: now
+          }
+        }));
 
-      console.log('Job created for clip:', clipId);
+        console.log('Clip created:', clipId);
+      } catch (err) {
+        console.error('FFmpeg error:', err);
+        
+        // 실패 시 FAILED 상태로 저장
+        await ddb.send(new PutCommand({
+          TableName: TABLE,
+          Item: {
+            id: clipId,
+            channelId: DEFAULT_CHANNEL_ID,
+            type: tags[0] || 'default',
+            tags,
+            startPts, endPts, timescale,
+            duration,
+            timestamp: eventTime,
+            status: 'FAILED',
+            error: err.message,
+            createdAt: now,
+            updatedAt: now
+          }
+        }));
+      }
     } catch (err) {
       console.error('Error:', err);
     }
   }
 
   return { statusCode: 200 };
-}
-
-// 유틸리티 함수
-function secsToTimecode(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  return `${pad(h)}:${pad(m)}:${pad(s)}:00`;
-}
-
-function pad(n) { return n.toString().padStart(2, '0'); }
-
-function response(statusCode, body) {
-  return {
-    statusCode,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-    },
-    body: JSON.stringify(body)
-  };
 }
