@@ -30,9 +30,11 @@
 
 ## Backend Integration
 
-- **AWS Services**: MediaLive, CloudWatch Logs
+- **AWS Services**: MediaLive, MediaPackage, MediaConvert, CloudWatch Logs, DynamoDB, S3
 - **API Gateway**: REST API at `https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com`
-- **Streaming**: HLS video playback
+- **Streaming**: HLS video playback with Time-shift support
+- **Clip Storage**: S3 bucket `hackathon8-output-video` for generated clips
+- **Clip Metadata**: DynamoDB table `highlight-clips`
 
 ## Common Commands
 
@@ -67,3 +69,31 @@ npm run build
 
 - Production builds output to `dist/` directory
 - Vite handles bundling, optimization, and asset management
+
+## Testing
+
+- **Test Framework**: Vitest
+- **Property-Based Testing**: fast-check library
+- **Test Files**: `*.test.ts` colocated with source files
+- **Run Tests**: `npm test` or `npx vitest --run`
+
+## Key Types
+
+```typescript
+// Clip status lifecycle
+type ClipStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+
+// Clip entity structure
+interface Clip {
+  id: string;
+  channelId: string;
+  type: EventType;
+  status: ClipStatus;
+  clipUrl?: string;
+  thumbnailUrl?: string;
+  duration: number;
+  timestamp: number;
+  tags?: string[];
+  error?: string;
+}
+```

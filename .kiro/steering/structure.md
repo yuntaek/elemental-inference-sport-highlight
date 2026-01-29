@@ -30,16 +30,20 @@ src/
 │   │   ├── live-events-sidebar.tsx
 │   │   ├── shorts-sidebar.tsx
 │   │   ├── event-badge.tsx
+│   │   ├── clip-card.tsx           # Clip display with preview/download
+│   │   ├── clip-generator-button.tsx # Clip generation trigger
+│   │   ├── clip-status-badge.tsx   # Clip status indicator
 │   │   ├── menu-screen.tsx
 │   │   └── welcome-screen.tsx
 │   ├── context/            # React context providers
 │   │   └── shorts-context.tsx
 │   ├── types/              # TypeScript type definitions
-│   │   └── events.ts
+│   │   └── events.ts       # Includes Clip, ClipStatus, CreateClipRequest types
 │   ├── utils/              # Utility functions
 │   │   ├── aws-api.ts      # AWS API integration
 │   │   ├── aws-mock.ts     # Mock data for development
-│   │   └── event-colors.ts # Event styling utilities
+│   │   ├── event-colors.ts # Event styling utilities
+│   │   └── clip-utils.ts   # Time-shift URL generation, PTS conversion
 │   ├── routes.ts           # Route definitions
 │   └── App.tsx             # Root application component
 ├── styles/                 # Global styles
@@ -65,6 +69,9 @@ Application-specific components that compose UI components:
 - `channel-card.tsx` - MediaLive channel display
 - `video-player.tsx` - HLS video playback
 - `live-events-sidebar.tsx` - Real-time event feed
+- `clip-card.tsx` - Clip display with thumbnail, preview, download
+- `clip-generator-button.tsx` - Trigger clip generation from events
+- `clip-status-badge.tsx` - Visual status indicator for clips
 - Modal components for channel management
 
 ## Backend Structure (`server/`)
@@ -80,10 +87,15 @@ server/
 
 ```
 lambda/
-├── index.mjs               # Lambda function code
+├── index.mjs               # Main Lambda function code
 ├── function.zip            # Deployment package
+├── api-function.zip        # API Lambda deployment package
 ├── policy.json             # IAM policy
-└── trust-policy.json       # IAM trust policy
+├── trust-policy.json       # IAM trust policy
+└── clip-generator/         # Highlight clip generation Lambda
+    ├── index.mjs           # Clip generator using MediaConvert
+    ├── function.zip        # Deployment package
+    └── package.json        # Dependencies (@aws-sdk/client-mediaconvert, etc.)
 ```
 
 ## Naming Conventions

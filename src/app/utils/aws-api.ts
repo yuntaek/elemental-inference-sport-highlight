@@ -1,6 +1,47 @@
-import type { MediaLiveChannel, SportEvent } from '@/app/types/events';
+import type { MediaLiveChannel, SportEvent, CreateClipRequest, CreateClipResponse, Clip } from '@/app/types/events';
 
 const API_BASE = 'https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com';
+
+// 클립 생성 필수 파라미터 검증
+export function validateCreateClipRequest(request: Partial<CreateClipRequest>): { valid: boolean; missing: string[] } {
+  const requiredFields: (keyof CreateClipRequest)[] = ['channelId', 'eventId', 'startPts', 'endPts', 'timescale', 'timestamp'];
+  const missing: string[] = [];
+  
+  for (const field of requiredFields) {
+    if (request[field] === undefined || request[field] === null) {
+      missing.push(field);
+    }
+  }
+  
+  return {
+    valid: missing.length === 0,
+    missing
+  };
+}
+
+// 클립 생성 API
+export async function createClip(request: CreateClipRequest): Promise<CreateClipResponse> {
+  const validation = validateCreateClipRequest(request);
+  
+  if (!validation.valid) {
+    throw new Error(`Missing required parameters: ${validation.missing.join(', ')}`);
+  }
+  
+  const res = await fetch(`${API_BASE}/clips`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ error: 'Failed to create clip' }));
+    throw new Error(errorData.error || 'Failed to create clip');
+  }
+  
+  return res.json();
+}
 
 export async function getRunningChannels(): Promise<MediaLiveChannel[]> {
   const res = await fetch(`${API_BASE}/channels`);
@@ -22,6 +63,46 @@ export async function getChannelEvents(channelId: string, hours = 24): Promise<S
   const data = await res.json();
   console.log('Channel events response:', data);
   return data;
+}
+
+// 클립 상태 조회 API
+export async function getClipStatus(clipId: string): Promise<Clip> {
+  const res = await fetch(`${API_BASE}/clips/${clipId}`);
+  
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error('Clip not found');
+    }
+    throw new Error('Failed to fetch clip status');
+  }
+  
+  return res.json();
+}
+
+// 채널별 클립 목록 조회 API
+export async function getChannelClips(channelId: string): Promise<Clip[]> {
+  const res = await fetch(`${API_BASE}/channels/${channelId}/clips`);
+  
+  if (!res.ok) {
+    throw new Error('Failed to fetch channel clips');
+  }
+  
+  return res.json();
+}
+
+// 클립 다운로드 URL 생성 API (presigned URL)
+export async function getClipDownloadUrl(clipId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/clips/${clipId}/download`);
+  
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error('Clip file not found in S3');
+    }
+    throw new Error('Failed to generate download URL');
+  }
+  
+  const data = await res.json();
+  return data.downloadUrl;
 }
 
 // 실시간 이벤트 폴링

@@ -4,7 +4,7 @@ Sports Event Monitoring Dashboard - A real-time monitoring application for sport
 
 ## Core Purpose
 
-Monitor and display live sports events (3-point shots, dunks, incidents) from AWS MediaLive channels with real-time event detection and video playback capabilities.
+Monitor and display live sports events (3-point shots, dunks, incidents) from AWS MediaLive channels with real-time event detection, video playback, and highlight clip generation capabilities.
 
 ## Key Features
 
@@ -13,6 +13,8 @@ Monitor and display live sports events (3-point shots, dunks, incidents) from AW
 - **Video Playback**: HLS stream player for live and recorded content
 - **Event Logging**: CloudWatch integration for event history and analysis
 - **Event Types**: Supports three-pointer, dunk, incident, and default event classifications
+- **Highlight Clip Generation**: Generate MP4 clips from live stream events using MediaPackage Time-shift and MediaConvert
+- **Clip Management**: Preview, download, and track clip generation status (PENDING, PROCESSING, COMPLETED, FAILED)
 
 ## Target Users
 
