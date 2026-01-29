@@ -1,6 +1,9 @@
 import type { MediaLiveChannel, SportEvent, CreateClipRequest, CreateClipResponse, Clip } from '@/app/types/events';
 
-const API_BASE = 'https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com';
+// 환경별 API Base URL
+// Vite 환경 변수: VITE_API_BASE
+// 기본값: Production API
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://3tlrl8kw8i.execute-api.us-west-2.amazonaws.com';
 
 // 클립 생성 필수 파라미터 검증
 export function validateCreateClipRequest(request: Partial<CreateClipRequest>): { valid: boolean; missing: string[] } {
