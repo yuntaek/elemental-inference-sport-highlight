@@ -334,8 +334,8 @@ describe('BatchClipGenerator', () => {
       fc.assert(
         fc.property(
           fc.integer({ min: 1, max: 1000 }),
-          fc.float({ min: 0, max: 1 }),
-          fc.float({ min: 0, max: 1 }),
+          fc.float({ min: 0, max: 1, noNaN: true }),
+          fc.float({ min: 0, max: 1, noNaN: true }),
           (total, completedRatio, failedRatio) => {
             // Ensure completed + failed <= total by using ratios
             const maxCompleted = total;
