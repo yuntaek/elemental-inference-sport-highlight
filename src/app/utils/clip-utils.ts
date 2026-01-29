@@ -148,3 +148,18 @@ export function calculateClipDuration(
   const endSeconds = Math.ceil(ptsToSeconds(endPts, timescale));
   return endSeconds - startSeconds;
 }
+
+
+/**
+ * Time-shift 윈도우 내에 있는지 확인하는 간단한 헬퍼 함수
+ * @param eventTimestamp - 이벤트 발생 시점 (Unix timestamp, 밀리초)
+ * @param windowMs - Time-shift 윈도우 크기 (밀리초, 기본 24시간)
+ * @returns 윈도우 내에 있으면 true, 아니면 false
+ */
+export function isWithinTimeShiftWindow(
+  eventTimestamp: number,
+  windowMs: number = TIME_SHIFT_WINDOW_MS
+): boolean {
+  const result = validateTimeShiftWindow(eventTimestamp, windowMs);
+  return result.isValid;
+}

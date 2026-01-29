@@ -93,39 +93,39 @@
     - **Property 9: 일괄 클립 진행률 정확성**
     - **Validates: Requirements 7.1, 7.2, 7.3, 7.4**
 
-- [-] 8. 기존 컴포넌트 통합
-  - [-] 8.1 ChannelDetailModal에 클립 생성 버튼 추가
+- [x] 8. 기존 컴포넌트 통합
+  - [x] 8.1 ChannelDetailModal에 클립 생성 버튼 추가
     - 이벤트 카드에 ClipGeneratorButton 통합
     - 클립 상태 표시 추가
     - _Requirements: 1.1, 4.1_
-  - [ ] 8.2 ChannelDetailModal에 클립 미리보기 기능 추가
+  - [x] 8.2 ChannelDetailModal에 클립 미리보기 기능 추가
     - ClipCard 클릭 시 비디오 플레이어에서 재생
     - 메타데이터 표시
     - _Requirements: 6.1, 6.2_
-  - [ ] 8.3 ChannelDetailModal에 일괄 클립 생성 기능 추가
+  - [x] 8.3 ChannelDetailModal에 일괄 클립 생성 기능 추가
     - 이벤트 다중 선택 체크박스
     - BatchClipGenerator 통합
     - _Requirements: 7.1_
 
-- [ ] 9. Lambda 함수 확장
-  - [ ] 9.1 API Gateway 트리거 지원 추가 (`lambda/clip-generator/index.mjs`)
+- [x] 9. Lambda 함수 확장
+  - [x] 9.1 API Gateway 트리거 지원 추가 (`lambda/clip-generator/index.mjs`)
     - POST /clips 핸들러 추가
     - GET /clips/:id 핸들러 추가
     - 필수 파라미터 검증
     - _Requirements: 1.3, 4.1_
-  - [ ] 9.2 Time-shift URL 생성 로직 추가
+  - [x] 9.2 Time-shift URL 생성 로직 추가
     - timestamp 기반 start/end 파라미터 계산
     - 24시간 윈도우 검증
     - _Requirements: 2.1, 2.2, 2.3_
-  - [ ] 9.3 클립 상태 업데이트 로직 추가
+  - [x] 9.3 클립 상태 업데이트 로직 추가
     - MediaConvert Job 완료/실패 이벤트 처리
     - DynamoDB 상태 업데이트
     - _Requirements: 3.3, 3.4_
-  - [ ] 9.4 clipId 고유성 속성 테스트 작성
+  - [x] 9.4 clipId 고유성 속성 테스트 작성
     - **Property 2: 클립 ID 고유성**
     - **Validates: Requirements 1.4**
 
-- [ ] 10. Final Checkpoint - 전체 기능 검증
+- [-] 10. Final Checkpoint - 전체 기능 검증
   - 모든 테스트 통과 확인, 문제 발생 시 사용자에게 문의
 
 ## Notes
