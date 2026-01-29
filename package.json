@@ -7,7 +7,9 @@
     "build": "vite build",
     "dev": "vite",
     "server": "cd server && node index.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\""
+    "start": "concurrently \"npm run server\" \"npm run dev\"",
+    "test": "vitest --run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
@@ -67,10 +69,13 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
+    "@types/node": "^25.1.0",
     "@vitejs/plugin-react": "4.7.0",
     "concurrently": "^9.2.1",
+    "fast-check": "^4.5.3",
     "tailwindcss": "4.1.12",
-    "vite": "6.3.5"
+    "vite": "6.3.5",
+    "vitest": "^3.2.4"
   },
   "peerDependencies": {
     "react": "18.3.1",
