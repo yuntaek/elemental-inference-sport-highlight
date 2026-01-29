@@ -6,3 +6,6 @@ dist/
 
 # Kiro settings (contains sensitive tokens)
 .kiro/settings/
+
+# Lambda deployment packages
+*.zip

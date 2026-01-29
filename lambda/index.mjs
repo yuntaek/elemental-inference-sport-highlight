@@ -10,6 +10,8 @@ const REGION = 'us-west-2';
 const TABLE = process.env.DYNAMODB_TABLE || 'highlight-clips';
 const CLIP_GENERATOR_FUNCTION = process.env.CLIP_GENERATOR_FUNCTION || 'clip-generator';
 const S3_BUCKET = process.env.S3_BUCKET || 'hackathon8-output-video';
+const CLIP_CLOUDFRONT_DOMAIN = 'df1kr6icfg8e8.cloudfront.net'; // Clip Storage CloudFront
+const HLS_CLOUDFRONT_DOMAIN = 'd2byorho3b7g5y.cloudfront.net'; // HLS Streaming CloudFront
 
 const mediaLiveClient = new MediaLiveClient({ region: REGION });
 const mediaPackageClient = new MediaPackageClient({ region: REGION });
@@ -43,14 +45,15 @@ export const handler = async (event) => {
         let hlsUrl = null;
         let thumbnailUrl = null;
         
-        // MediaPackage HLS URL
+        // MediaPackage HLS URL → CloudFront URL로 변환
         const mpDest = ch.Destinations?.find(d => d.MediaPackageSettings?.length > 0);
         if (mpDest?.MediaPackageSettings?.[0]?.ChannelId) {
           try {
             const { OriginEndpoints } = await mediaPackageClient.send(
               new ListOriginEndpointsCommand({ ChannelId: mpDest.MediaPackageSettings[0].ChannelId })
             );
-            hlsUrl = OriginEndpoints?.find(e => e.HlsPackage)?.Url || null;
+            const mpUrl = OriginEndpoints?.find(e => e.HlsPackage)?.Url || null;
+            hlsUrl = convertMediaPackageToCloudFront(mpUrl);
           } catch (e) { console.log('MediaPackage error:', e); }
         }
 
@@ -118,14 +121,17 @@ export const handler = async (event) => {
       try {
         const { Items = [] } = await ddb.send(new QueryCommand({
           TableName: TABLE,
-          IndexName: 'channelId-index',
+          IndexName: 'channelId-timestamp-index',
           KeyConditionExpression: 'channelId = :cid',
           ExpressionAttributeValues: { ':cid': channelId },
           ScanIndexForward: false,
           Limit: 100
         }));
         
-        return { statusCode: 200, headers, body: JSON.stringify(Items) };
+        // S3 URL을 CloudFront URL로 변환
+        const convertedItems = Items.map(convertClipUrls);
+        
+        return { statusCode: 200, headers, body: JSON.stringify(convertedItems) };
       } catch (err) {
         console.error('DynamoDB error:', err);
         return { statusCode: 200, headers, body: JSON.stringify([]) };
@@ -145,7 +151,8 @@ export const handler = async (event) => {
           const { OriginEndpoints } = await mediaPackageClient.send(
             new ListOriginEndpointsCommand({ ChannelId: mpDest.MediaPackageSettings[0].ChannelId })
           );
-          hlsUrl = OriginEndpoints?.find(e => e.HlsPackage)?.Url || null;
+          const mpUrl = OriginEndpoints?.find(e => e.HlsPackage)?.Url || null;
+          hlsUrl = convertMediaPackageToCloudFront(mpUrl);
         } catch (e) { console.log('MediaPackage error:', e); }
       }
       
@@ -220,7 +227,10 @@ export const handler = async (event) => {
       // timestamp 기준 내림차순 정렬
       Items.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
       
-      return { statusCode: 200, headers, body: JSON.stringify(Items) };
+      // S3 URL을 CloudFront URL로 변환
+      const convertedItems = Items.map(convertClipUrls);
+      
+      return { statusCode: 200, headers, body: JSON.stringify(convertedItems) };
     }
 
     // GET /clips/{clipId} - 클립 상태 조회
@@ -233,7 +243,7 @@ export const handler = async (event) => {
         return { statusCode: 404, headers, body: JSON.stringify({ error: 'Clip not found' }) };
       }
       
-      return { statusCode: 200, headers, body: JSON.stringify(Item) };
+      return { statusCode: 200, headers, body: JSON.stringify(convertClipUrls(Item)) };
     }
 
     // GET /clips/{clipId}/download - 다운로드 URL 생성
@@ -265,14 +275,17 @@ export const handler = async (event) => {
       
       const { Items = [] } = await ddb.send(new QueryCommand({
         TableName: TABLE,
-        IndexName: 'channelId-index',
+        IndexName: 'channelId-timestamp-index',
         KeyConditionExpression: 'channelId = :cid',
         ExpressionAttributeValues: { ':cid': channelId },
         ScanIndexForward: false,
         Limit: 100
       }));
       
-      return { statusCode: 200, headers, body: JSON.stringify(Items) };
+      // S3 URL을 CloudFront URL로 변환
+      const convertedItems = Items.map(convertClipUrls);
+      
+      return { statusCode: 200, headers, body: JSON.stringify(convertedItems) };
     }
 
     return { statusCode: 404, headers, body: JSON.stringify({ error: 'Not Found' }) };
@@ -289,4 +302,58 @@ function mapTagToType(tag) {
   if (t === 'twopointer' || t === '2-pointer') return 'two-pointer';
   if (t === 'dunk') return 'dunk';
   return t;
+}
+
+// MediaPackage URL을 CloudFront URL로 변환
+function convertMediaPackageToCloudFront(url) {
+  if (!url) return url;
+  
+  // MediaPackage URL 패턴: https://xxx.mediapackage.region.amazonaws.com/out/v1/xxx/index.m3u8
+  const mpPattern = /https?:\/\/[^.]+\.mediapackage\.[^/]+\.amazonaws\.com(\/out\/v1\/.+)/;
+  const match = url.match(mpPattern);
+  if (match) {
+    const path = match[1];
+    return `https://${HLS_CLOUDFRONT_DOMAIN}${path}`;
+  }
+  
+  return url;
+}
+
+// S3 URL을 CloudFront URL로 변환
+function convertToCloudFrontUrl(url) {
+  if (!url) return url;
+  
+  // S3 URL 패턴들:
+  // 1. https://bucket.s3.region.amazonaws.com/key
+  // 2. https://bucket.s3-region.amazonaws.com/key  
+  // 3. https://s3.region.amazonaws.com/bucket/key
+  // 4. https://s3-region.amazonaws.com/bucket/key
+  
+  // 패턴 1 & 2: bucket.s3.region.amazonaws.com 또는 bucket.s3-region.amazonaws.com
+  const pattern1 = /https?:\/\/([^.]+)\.s3[.-]([^.]+)\.amazonaws\.com\/(.+)/;
+  let match = url.match(pattern1);
+  if (match) {
+    const key = match[3];
+    return `https://${CLIP_CLOUDFRONT_DOMAIN}/${key}`;
+  }
+  
+  // 패턴 3 & 4: s3.region.amazonaws.com/bucket 또는 s3-region.amazonaws.com/bucket
+  const pattern2 = /https?:\/\/s3[.-]([^.]+)\.amazonaws\.com\/([^/]+)\/(.+)/;
+  match = url.match(pattern2);
+  if (match) {
+    const key = match[3];
+    return `https://${CLIP_CLOUDFRONT_DOMAIN}/${key}`;
+  }
+  
+  return url;
+}
+
+// 클립 아이템의 URL들을 CloudFront URL로 변환
+function convertClipUrls(item) {
+  if (!item) return item;
+  return {
+    ...item,
+    clipUrl: convertToCloudFrontUrl(item.clipUrl),
+    thumbnailUrl: convertToCloudFrontUrl(item.thumbnailUrl),
+  };
 }
