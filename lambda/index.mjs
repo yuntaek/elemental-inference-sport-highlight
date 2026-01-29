@@ -1,19 +1,26 @@
 import { MediaLiveClient, ListChannelsCommand, DescribeChannelCommand, DescribeThumbnailsCommand } from '@aws-sdk/client-medialive';
 import { MediaPackageClient, ListOriginEndpointsCommand } from '@aws-sdk/client-mediapackage';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const REGION = 'us-west-2';
-const TABLE = 'highlight-clips';
+const TABLE = process.env.DYNAMODB_TABLE || 'highlight-clips';
+const CLIP_GENERATOR_FUNCTION = process.env.CLIP_GENERATOR_FUNCTION || 'clip-generator';
+const S3_BUCKET = process.env.S3_BUCKET || 'hackathon8-output-video';
 
 const mediaLiveClient = new MediaLiveClient({ region: REGION });
 const mediaPackageClient = new MediaPackageClient({ region: REGION });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+const lambdaClient = new LambdaClient({ region: REGION });
+const s3Client = new S3Client({ region: REGION });
 
 const headers = {
   'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
@@ -154,6 +161,118 @@ export const handler = async (event) => {
           hlsUrl,
         }),
       };
+    }
+
+    // POST /clips - 클립 생성
+    if (path === '/clips' && method === 'POST') {
+      const body = JSON.parse(event.body || '{}');
+      const { channelId, startPts, endPts, duration, type, tags, timescale } = body;
+      
+      if (!channelId || !startPts || !endPts) {
+        return { 
+          statusCode: 400, 
+          headers, 
+          body: JSON.stringify({ error: 'Missing required fields: channelId, startPts, endPts' }) 
+        };
+      }
+      
+      const clipId = crypto.randomUUID();
+      const timestamp = Date.now();
+      
+      // DynamoDB에 PENDING 상태로 저장
+      const clipItem = {
+        id: clipId,
+        channelId,
+        startPts,
+        endPts,
+        duration: duration || Math.round((endPts - startPts) / (timescale || 90000)),
+        type: type || 'default',
+        tags: tags || [],
+        timescale: timescale || 90000,
+        status: 'PENDING',
+        timestamp,
+        createdAt: new Date().toISOString(),
+      };
+      
+      await ddb.send(new PutCommand({ TableName: TABLE, Item: clipItem }));
+      
+      // clip-generator Lambda 비동기 호출
+      try {
+        await lambdaClient.send(new InvokeCommand({
+          FunctionName: CLIP_GENERATOR_FUNCTION,
+          InvocationType: 'Event',
+          Payload: JSON.stringify({ clipId, ...clipItem }),
+        }));
+      } catch (e) {
+        console.error('Failed to invoke clip generator:', e);
+      }
+      
+      return { statusCode: 201, headers, body: JSON.stringify(clipItem) };
+    }
+
+    // GET /clips - 전체 클립 목록
+    if (path === '/clips' && method === 'GET') {
+      const { Items = [] } = await ddb.send(new ScanCommand({
+        TableName: TABLE,
+        Limit: 100,
+      }));
+      
+      // timestamp 기준 내림차순 정렬
+      Items.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      
+      return { statusCode: 200, headers, body: JSON.stringify(Items) };
+    }
+
+    // GET /clips/{clipId} - 클립 상태 조회
+    const clipMatch = path.match(/^\/clips\/([^/]+)$/);
+    if (clipMatch && method === 'GET') {
+      const clipId = clipMatch[1];
+      const { Item } = await ddb.send(new GetCommand({ TableName: TABLE, Key: { id: clipId } }));
+      
+      if (!Item) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Clip not found' }) };
+      }
+      
+      return { statusCode: 200, headers, body: JSON.stringify(Item) };
+    }
+
+    // GET /clips/{clipId}/download - 다운로드 URL 생성
+    const downloadMatch = path.match(/^\/clips\/([^/]+)\/download$/);
+    if (downloadMatch && method === 'GET') {
+      const clipId = downloadMatch[1];
+      const { Item } = await ddb.send(new GetCommand({ TableName: TABLE, Key: { id: clipId } }));
+      
+      if (!Item) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Clip not found' }) };
+      }
+      
+      if (Item.status !== 'COMPLETED' || !Item.clipUrl) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Clip not ready for download' }) };
+      }
+      
+      // S3 presigned URL 생성
+      const s3Key = `clips/${Item.channelId}/${clipId}.mp4`;
+      const command = new GetObjectCommand({ Bucket: S3_BUCKET, Key: s3Key });
+      const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+      
+      return { statusCode: 200, headers, body: JSON.stringify({ downloadUrl }) };
+    }
+
+    // GET /channels/{channelId}/clips - 채널별 클립 목록
+    const channelClipsMatch = path.match(/^\/channels\/([^/]+)\/clips$/);
+    if (channelClipsMatch && method === 'GET') {
+      const channelId = channelClipsMatch[1];
+      
+      const { Items = [] } = await ddb.send(new QueryCommand({
+        TableName: TABLE,
+        IndexName: 'channelId-index',
+        KeyConditionExpression: 'channelId = :cid',
+        ExpressionAttributeValues: { ':cid': channelId },
+        ScanIndexForward: false,
+        Limit: 100
+      }));
+      
+      return { statusCode: 200, headers, body: JSON.stringify(Items) };
     }
 
     return { statusCode: 404, headers, body: JSON.stringify({ error: 'Not Found' }) };
