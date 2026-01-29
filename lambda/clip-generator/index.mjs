@@ -8,7 +8,7 @@ import { gunzipSync } from 'zlib';
 
 const REGION = 'us-west-2';
 const BUCKET = 'hackathon8-output-video';
-const TABLE = 'highlight-clips';
+const TABLE = 'highlight-clips-stage';
 const HLS_URL = 'https://c4af3793bf76b33c.mediapackage.us-west-2.amazonaws.com/out/v1/038b4469b5c541dc8816deef6ccd4aae/index.m3u8';
 const DEFAULT_CHANNEL_ID = '6220813';
 const MEDIACONVERT_ROLE = 'arn:aws:iam::083304596944:role/MediaConvertRole';
